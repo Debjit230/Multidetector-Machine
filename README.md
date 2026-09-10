@@ -123,17 +123,17 @@ multidetectorMachine/
 ## 📷 Gallery
 
 ### Circuit / Wiring Diagram
-![ESP32-S3 MultiDetector Wiring Diagram](images/wiring_diagram.jpg)
+![ESP32-S3 MultiDetector Wiring Diagram](images/wiring_diagram.jpeg)
 
 ### Device Photos
 | Front | Back | Internal |
 |-------|------|----------|
-| ![Front](images/device_front.jpg) | ![Back](images/device_back.jpg) | ![Internal](images/device_internal.jpg) |
+| ![Front](images/device_front.jpeg) | ![Back](images/device_back.jpeg) | ![Internal](images/device_internal.jpeg) |
 
 ### OLED Screens
-![RF Scanner](images/screen_rf.jpg)
-![WiFi Scanner](images/screen_wifi.jpg)
-![LoRa Terminal](images/screen_lora.jpg)
+![RF Scanner](images/screen_rf.jpeg)
+![WiFi Scanner](images/screen_wifi.jpeg)
+![LoRa Terminal](images/screen_lora.jpeg)
 
 ---
 
