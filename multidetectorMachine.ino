@@ -52,7 +52,7 @@ bool gsmGpsFixed = false;
 unsigned long gsmInitTime = 0;
 unsigned long lastSmsTime = 0;
 const unsigned long SMS_COOLDOWN = 30000;
-const char* ALERT_PHONES[] = {"8xxxxxxxx9"};
+const char* ALERT_PHONES[] = {"8653103969","7029566272"};
 const int ALERT_PHONE_COUNT = 3;
 #define ALERT_PHONE ALERT_PHONES[0]  // primary number for single-target displays
 
@@ -118,11 +118,24 @@ int modeSelectorIdx = 0;
 bool pdBleActive = false;
 bool pdWifiActive = false;
 
-// Phone Detector tuning: close-range detection (< ~1 meter)
-#define PD_BLE_CLOSE_RSSI   -55    // BLE closer than ~1m
-#define PD_WIFI_CLOSE_RSSI  -60    // WiFi AP from phone hotspot closer than ~1m
-#define PD_RF_SPIKE_DB      12.0   // ignore small RF spikes (was adding false confidence)
-#define PD_DETECT_CONF      50     // minimum confidence to declare a phone
+// Phone Detector tuning: 2.5 meter radius detection
+// BLE @1m = -59dBm, path loss n=2  ->  -59 - 20*log10(2.5) ~= -67 dBm
+// WiFi @1m = -45dBm, path loss n=3 ->  -45 - 30*log10(2.5) ~= -57 dBm
+#define PD_BLE_RADIUS_RSSI   -67    // BLE within ~2.5m
+#define PD_WIFI_RADIUS_RSSI  -57    // WiFi within ~2.5m
+#define PD_RF_SPIKE_DB       8.0    // RF burst above baseline (cell uplink)
+#define PD_RF_STRONG_DB      15.0   // strong RF burst -> very likely a phone
+#define PD_DETECT_CONF       50     // confidence to declare CONFIRMED phone
+#define PD_SUSPECT_CONF      30     // confidence to show POSSIBLE phone (RF only)
+
+// Detection states
+#define PD_NONE     0
+#define PD_SUSPECT  1   // RF only, no BT/WiFi
+#define PD_CONFIRM  2   // BLE and/or WiFi seen in radius
+
+int pdDetectionState = PD_NONE;
+int pdRfBurstCount = 0;        // RF bursts inside one 8s cycle
+unsigned long pdLastRfBurst = 0;
 
 bool modeSelectorActive = false;
 
@@ -1674,8 +1687,8 @@ void runPhoneDetect() {
   static int pdBleCount = 0;
   static int pdWifiCount = 0;
   static int pdConf = 0;
-  static int pdBleBest = -999;   // strongest nearby BLE RSSI
-  static int pdWifiBest = -999;  // strongest nearby WiFi RSSI
+  static int pdBleBest = -999;
+  static int pdWifiBest = -999;
 
   // --- Continuous RF sampling (keeps globals fresh for SMS alerts) ---
   int rawSum = 0;
@@ -1688,7 +1701,6 @@ void runPhoneDetect() {
   float spike = 0;
 
   // Self-calibrate RF baseline if RF Scanner mode was never opened.
-  // Takes ~1 second (50 samples) on first entry, then measurement runs live.
   static long pdCalSum = 0;
   static int pdCalCount = 0;
   if (!rfCalibrated) {
@@ -1697,7 +1709,6 @@ void runPhoneDetect() {
     if (pdCalCount >= 50) {
       rfBaseline = (pdCalSum / 50.0) / 100.0;
       rfCalibrated = true;
-      pdCalCount = 50;
       Serial.print("PD RF calibrated. Baseline: ");
       Serial.print(rfBaseline, 1);
       Serial.println(" dBm");
@@ -1710,10 +1721,21 @@ void runPhoneDetect() {
     spike = rfDbm - rfBaseline;
     rfSpikeDb = spike;
     rfValue = constrain((int)((spike / 25.0) * 100.0), 0, 100);
+
+    // Count distinct RF bursts (mobile uplink emits short periodic bursts)
+    if (spike > PD_RF_SPIKE_DB) {
+      if (millis() - pdLastRfBurst > 400) {
+        pdRfBurstCount++;
+        pdLastRfBurst = millis();
+      }
+    }
   }
 
   // --- 8-second cycle: 0-4s BLE scan  /  4-8s WiFi scan ---
-  if (millis() - pdCycleStart > 8000) pdCycleStart = millis();
+  if (millis() - pdCycleStart > 8000) {
+    pdCycleStart = millis();
+    pdRfBurstCount = 0;   // reset burst counter each cycle
+  }
   unsigned long phase = millis() - pdCycleStart;
   bool inBlePhase = (phase < 4000);
 
@@ -1731,7 +1753,7 @@ void runPhoneDetect() {
       if (res) {
         for (int i = 0; i < res->getCount(); i++) {
           int rssi = res->getDevice(i).getRSSI();
-          if (rssi > PD_BLE_CLOSE_RSSI) {   // only VERY close devices count
+          if (rssi > PD_BLE_RADIUS_RSSI) {   // within ~2.5m
             pdBleCount++;
             if (rssi > pdBleBest) pdBleBest = rssi;
           }
@@ -1751,7 +1773,7 @@ void runPhoneDetect() {
       pdWifiBest = -999;
       for (int i = 0; i < n; i++) {
         int rssi = WiFi.RSSI(i);
-        if (rssi > PD_WIFI_CLOSE_RSSI) {    // only VERY close APs count
+        if (rssi > PD_WIFI_RADIUS_RSSI) {    // within ~2.5m
           pdWifiCount++;
           if (rssi > pdWifiBest) pdWifiBest = rssi;
         }
@@ -1761,28 +1783,44 @@ void runPhoneDetect() {
     }
   }
 
-  // --- Confidence algorithm (close-range only) ---
+  // --- Confidence algorithm ---
+  // RF bursts are how phones "check in" with the tower - even with
+  // BT/WiFi off, a phone in standby emits periodic uplink bursts.
   pdConf = 0;
-  if (pdBleCount > 0)  pdConf += min(pdBleCount * 30, 45);  // up to 45%
-  if (pdWifiCount > 0) pdConf += min(pdWifiCount * 25, 35); // up to 35%
-  if (spike > PD_RF_SPIKE_DB) pdConf += 20;                 // strong RF burst only (+20)
+  if (pdBleCount > 0)  pdConf += min(pdBleCount * 30, 45);        // up to 45%
+  if (pdWifiCount > 0) pdConf += min(pdWifiCount * 25, 35);       // up to 35%
+  if (spike > PD_RF_SPIKE_DB)  pdConf += 15;                      // live burst +15
+  if (spike > PD_RF_STRONG_DB) pdConf += 10;                      // strong burst +10
+  if (pdRfBurstCount >= 2) pdConf += 15;                          // repeated bursts +15
+  if (pdRfBurstCount >= 5) pdConf += 10;                          // many bursts +10
   pdConf = constrain(pdConf, 0, 100);
 
-  // --- Distance estimate from the strongest close signal ---
-  // BLE: RSSI = -59 at 1m, path loss exponent 2
-  // WiFi: RSSI = -45 at 1m, path loss exponent 3
+  // --- Classify detection state ---
+  if (pdConf >= PD_DETECT_CONF && (pdBleCount > 0 || pdWifiCount > 0)) {
+    pdDetectionState = PD_CONFIRM;
+  } else if (pdConf >= PD_SUSPECT_CONF) {
+    pdDetectionState = PD_SUSPECT;   // RF-only phone signature
+  } else {
+    pdDetectionState = PD_NONE;
+  }
+
+  // --- Distance estimate ---
   float estDist = -1.0;
   if (pdBleBest > -999)  estDist = pow(10.0, (-59.0 - (float)pdBleBest) / 20.0);
   if (pdWifiBest > -999) {
     float dW = pow(10.0, (-45.0 - (float)pdWifiBest) / 30.0);
     if (estDist < 0.0 || dW < estDist) estDist = dW;
   }
+  if (estDist < 0.0 && spike > PD_RF_SPIKE_DB) {
+    // crude RF-only estimate: stronger spike = closer
+    // 8dB ~= 2.5m, 15dB ~= 0.5m
+    estDist = constrain(2.5 - ((spike - PD_RF_SPIKE_DB) / (PD_RF_STRONG_DB - PD_RF_SPIKE_DB)) * 2.0, 0.5, 2.5);
+  }
   if (estDist > 9.9) estDist = 9.9;
 
-  // --- Alert output: SILENT unless a phone is confirmed ---
-  bool detected = (pdConf >= PD_DETECT_CONF);
-  if (detected) {
-    // Beep rate tied to confidence: closer = faster beeping
+  // --- Alert output ---
+  if (pdDetectionState == PD_CONFIRM) {
+    // fast beeping, full alert
     int beepInterval = map(pdConf, PD_DETECT_CONF, 100, 450, 80);
     static unsigned long lastBeep = 0;
     if (millis() - lastBeep > (unsigned long)beepInterval) {
@@ -1798,8 +1836,16 @@ void runPhoneDetect() {
       sendAlertSMS("PHONE DETECTED! Conf:" + String(pdConf) + "% BLE:" + String(pdBleCount) +
                    " WiFi:" + String(pdWifiCount) + " RF:" + String((int)spike) + "dB");
     }
+  } else if (pdDetectionState == PD_SUSPECT) {
+    // soft single beep every ~2s + slow LED blink (RF-only signature)
+    static unsigned long lastSuspectBeep = 0;
+    if (millis() - lastSuspectBeep > 2000) {
+      digitalWrite(BUZZER_PIN, HIGH); delay(25); digitalWrite(BUZZER_PIN, LOW);
+      lastSuspectBeep = millis();
+    }
+    digitalWrite(STATUS_LED, (millis() / 700) % 2);
+    digitalWrite(VIBRATION_PIN, LOW);
   } else {
-    // completely silent
     digitalWrite(STATUS_LED, LOW);
     digitalWrite(VIBRATION_PIN, LOW);
     digitalWrite(BUZZER_PIN, LOW);
@@ -1811,11 +1857,13 @@ void runPhoneDetect() {
   display.setTextColor(SH110X_WHITE);
   display.setCursor(0, 0);
   display.print("PHONE DETECTOR");
-  display.setCursor(100, 0);
+  display.setCursor(78, 0);
+  display.print("2.5m R=");
+  display.setCursor(112, 0);
   display.print(inBlePhase ? "BT" : "WF");
   display.drawLine(0, 10, 128, 10, SH110X_WHITE);
 
-  if (detected) {
+  if (pdDetectionState == PD_CONFIRM) {
     display.setTextSize(2);
     display.setCursor(8, 13);
     display.print("PHONE!");
@@ -1834,28 +1882,52 @@ void runPhoneDetect() {
     if (!rfCalibrated) {
       display.print("RF: CALIBRATING");
     } else {
-      display.print("RF:"); display.print((int)spike); display.print("dB");
+      display.print("RF:"); display.print((int)spike); display.print("dB x");
+      display.print(pdRfBurstCount);
     }
     if ((millis() / 300) % 2) {
-      display.setCursor(90, 55); display.print("<<<");
+      display.setCursor(100, 55); display.print("<<<");
     }
+  } else if (pdDetectionState == PD_SUSPECT) {
+    // RF-only: no BT/WiFi but cellular-burst-like RF signature
+    display.setTextSize(2);
+    display.setCursor(2, 13);
+    display.print("POSSIBLE");
+    display.setTextSize(1);
+    display.setCursor(30, 30);
+    display.print("(RF ONLY)");
+    display.setCursor(0, 41);
+    display.print("CONF:"); display.print(pdConf); display.print("%");
+    if (estDist >= 0.0) {
+      display.setCursor(72, 41);
+      display.print("~"); display.print(estDist, 1); display.print("m");
+    }
+    display.setCursor(0, 52);
+    if (!rfCalibrated) {
+      display.print("RF CAL...");
+    } else {
+      display.print("RF burst:"); display.print((int)spike);
+      display.print("dB x"); display.print(pdRfBurstCount);
+    }
+    display.setCursor(0, 60);
+    display.print("Phone? (no BT/WF)");
   } else {
-    display.setCursor(0, 13); display.print("Scanning close range");
+    display.setCursor(0, 13); display.print("Scanning 2.5m radius");
     display.setCursor(0, 25);
     display.print("BLE:"); display.print(pdBleCount);
     display.setCursor(64, 25);
     display.print("WiFi:"); display.print(pdWifiCount);
     display.setCursor(0, 37);
     if (!rfCalibrated) {
-      display.print("RF CAL: "); display.print(pdCalCount * 2); display.print("%");
+      display.print("RF CAL: "); display.print(min(pdCalCount * 2, 100)); display.print("%");
     } else {
-      display.print("RF delta:"); display.print((int)spike); display.print("dB");
+      display.print("RF burst:"); display.print((int)spike);
+      display.print("dB x"); display.print(pdRfBurstCount);
     }
     display.drawLine(0, 47, 128, 47, SH110X_WHITE);
     display.setCursor(0, 53);
     display.print("Silent - no phone");
-    display.setCursor(0, 63);
-    if ((millis() / 800) % 2) display.print(".");
+    if ((millis() / 800) % 2) { display.setCursor(90, 53); display.print("."); }
   }
   display.display();
 }
