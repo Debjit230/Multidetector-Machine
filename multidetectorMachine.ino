@@ -1267,12 +1267,13 @@ void runLoRaMode() {
     display.print(">> MODE SELECTOR");
   } else {
     display.print(">> LoRa TERM");
-    display.setCursor(80, 0);
+    // Keep GSM bars and page number in fixed, non-overlapping columns.
+    drawGsmIndicator(88, 0);
+    display.setCursor(104, 0);
     display.print("P");
     display.print(terminalPage + 1);
     display.print("/5");
   }
-  drawGsmIndicator(50, 0);
   display.drawLine(0, 9, 128, 9, SH110X_WHITE);
 
   // ===== MODE SELECTOR OVERLAY =====
@@ -1856,61 +1857,59 @@ void runPhoneDetect() {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
   display.setCursor(0, 0);
-  display.print("PHONE DETECTOR");
-  display.setCursor(78, 0);
-  display.print("2.5m R=");
+  // Fixed columns prevent the range and scan-phase text from overlapping.
+  display.print("PHONE DET");
+  display.setCursor(84, 0);
+  display.print("2.5m");
   display.setCursor(112, 0);
   display.print(inBlePhase ? "BT" : "WF");
   display.drawLine(0, 10, 128, 10, SH110X_WHITE);
 
   if (pdDetectionState == PD_CONFIRM) {
+    // Keep the lowest text row at y=51 so nothing is clipped by the bezel.
     display.setTextSize(2);
-    display.setCursor(8, 13);
+    display.setCursor(8, 12);
     display.print("PHONE!");
     display.setTextSize(1);
-    display.setCursor(0, 33);
+    display.setCursor(0, 29);
     display.print("MATCH:"); display.print(pdConf); display.print("%");
     if (estDist >= 0.0) {
-      display.setCursor(72, 33);
+      display.setCursor(72, 29);
       display.print("~"); display.print(estDist, 1); display.print("m");
     }
-    display.setCursor(0, 44);
+    display.setCursor(0, 40);
     display.print("BLE:"); display.print(pdBleCount);
-    display.setCursor(64, 44);
+    display.setCursor(64, 40);
     display.print("WiFi:"); display.print(pdWifiCount);
-    display.setCursor(0, 55);
+    display.setCursor(0, 51);
     if (!rfCalibrated) {
       display.print("RF: CALIBRATING");
     } else {
       display.print("RF:"); display.print((int)spike); display.print("dB x");
       display.print(pdRfBurstCount);
     }
-    if ((millis() / 300) % 2) {
-      display.setCursor(100, 55); display.print("<<<");
-    }
   } else if (pdDetectionState == PD_SUSPECT) {
-    // RF-only: no BT/WiFi but cellular-burst-like RF signature
+    // RF-only: no BT/WiFi but cellular-burst-like RF signature.
+    // The status now ends on row 51; the old row-60 label was off-screen.
     display.setTextSize(2);
-    display.setCursor(2, 13);
+    display.setCursor(2, 12);
     display.print("POSSIBLE");
     display.setTextSize(1);
-    display.setCursor(30, 30);
+    display.setCursor(30, 28);
     display.print("(RF ONLY)");
-    display.setCursor(0, 41);
+    display.setCursor(0, 39);
     display.print("CONF:"); display.print(pdConf); display.print("%");
     if (estDist >= 0.0) {
-      display.setCursor(72, 41);
+      display.setCursor(72, 39);
       display.print("~"); display.print(estDist, 1); display.print("m");
     }
-    display.setCursor(0, 52);
+    display.setCursor(0, 50);
     if (!rfCalibrated) {
       display.print("RF CAL...");
     } else {
-      display.print("RF burst:"); display.print((int)spike);
+      display.print("RF:"); display.print((int)spike);
       display.print("dB x"); display.print(pdRfBurstCount);
     }
-    display.setCursor(0, 60);
-    display.print("Phone? (no BT/WF)");
   } else {
     display.setCursor(0, 13); display.print("Scanning 2.5m radius");
     display.setCursor(0, 25);
