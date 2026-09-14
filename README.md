@@ -128,11 +128,11 @@ multidetectorMachine/
 ### Device Photos
 | Front | Back | Internal |
 |-------|------|----------|
-| ![Front](images/device_front.jpeg) | ![Back](images/device_back.jpeg) | ![Internal](images/device_internal.jpeg) |
+| ![Front](images/device_front.JPG) | ![Back](images/device_back.JPG) | ![Internal](images/device_internal.JPG) |
 
 ### OLED Screens
-![RF Scanner](images/screen_rf.jpeg)
-![WiFi Scanner](images/screen_wifi.jpeg)
+![RF Scanner](images/screen_rf.JPG)
+![WiFi Scanner](images/screen_wifi.JPG)
 ![LoRa Terminal](images/screen_lora.jpeg)
 
 ---
